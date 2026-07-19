@@ -27,18 +27,23 @@ hermes() {
   if [ ! -f "$cli" ];  then echo "hermes(): kit CLI not found: $cli"  >&2; return 1; fi
   if [ ! -f "$conf" ]; then echo "hermes(): config not found: $conf" >&2; return 1; fi
 
+  # Session id for ref-counting — the terminal's shell PID. `down` only stops the
+  # pod when the LAST session exits, so closing one window won't kill another's.
+  local sid="$$"
+
   # Stop the pod on EVERY exit path: normal return, Ctrl-C (INT), kill (TERM),
   # terminal close (HUP), AND a failed bring-up (which may have created a pod).
   # Armed BEFORE `up` so nothing can leak. `down` re-reads the conf, so it stops
-  # the CURRENT pod even if `up` auto-migrated to a new one.
+  # the CURRENT pod even if `up` auto-migrated to a new one. It respects the
+  # session count + KEEP_ALIVE (see runpod-hermes.sh).
   local _rph_done=0
-  _rph_stop() { [ "$_rph_done" = 1 ] && return; _rph_done=1; bash "$cli" -c "$conf" down >/dev/null 2>&1; }
+  _rph_stop() { [ "$_rph_done" = 1 ] && return; _rph_done=1; RPH_SESSION="$sid" bash "$cli" -c "$conf" down >/dev/null 2>&1; }
   trap '_rph_stop' INT TERM HUP
 
   # Bring the pod up: resume it, or — if its host has no free GPU — auto-migrate
   # to a fresh pod on the same volume, then open the tunnel and start the model.
   # (Run via `bash` so a stripped exec bit on the CLI never matters.)
-  if ! bash "$cli" -c "$conf" up; then
+  if ! RPH_SESSION="$sid" bash "$cli" -c "$conf" up; then
     echo "hermes(): could not bring the pod up — cleaning up" >&2
     _rph_stop; trap - INT TERM HUP; return 1
   fi

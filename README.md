@@ -11,10 +11,14 @@ on a persistent network volume, so the pods are disposable and cheap.
 ## Highlights
 
 - **On-demand billing** — pod spins up on `hermes`, stops on exit (even on
-  Ctrl-C / closed terminal).
+  Ctrl-C / closed terminal). On-demand pods aren't interruptible: nobody kicks
+  you off a *running* pod. Need to guarantee the GPU across a heavy session?
+  `KEEP_ALIVE=1` keeps it up until you `stop`.
 - **Auto-migrate** — if a pod's host is out of GPUs, it creates a fresh pod on
   the same volume, repoints config, and continues. Capacity misses become
   invisible.
+- **Multi-session safe** — several `hermes` windows share one pod; it only stops
+  when the last session exits, so closing one window won't kill another's.
 - **Reproducible** — one `.conf` per client/machine; `create → bootstrap →
   config → test → install` scripts the whole setup.
 - **Battle-tested guardrails** — every field-learned gotcha is handled (SSH key

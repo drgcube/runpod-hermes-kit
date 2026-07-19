@@ -19,15 +19,24 @@
 #   install       Wire the hermes() wrapper into your shell rc
 #   ensure        Resume pod, or AUTO-MIGRATE to a fresh pod on the volume if no GPU capacity
 #   up            ensure + open tunnel + start model server (leaves it running)
-#   down          Stop model server + pod, close tunnel
+#   down          Stop the pod IF this is the last hermes session (else leave it up)
+#   stop          Force-stop the pod now, regardless of sessions/keep-alive
 #   serve         (pod running) ensure the model server is up + healthy
-#   status        Show pod state + server health
+#   status        Show pod state + server health + active sessions + keep-alive
 #   test          up -> one-shot through Hermes -> down   (add --keep to stay up)
 #
 # AUTO-MIGRATE: when a resume fails because the pod's host has no free GPU, the
 # kit creates a fresh pod on the SAME network volume (model+build already there),
 # repoints the conf, drops the old pod, and continues — capacity misses become
 # invisible. Controlled by AUTO_MIGRATE / MIGRATE_TERMINATE_OLD / NETWORK_VOLUME_ID.
+#
+# MULTI-SESSION: several `hermes` windows share ONE pod. Each registers a session
+# id ($RPH_SESSION); `down` only stops the pod when the LAST session exits (dead
+# sessions auto-pruned). So closing one window won't kill another's pod.
+#
+# KEEP_ALIVE=1: never auto-stop on exit — the pod stays RUNNING (billing) until
+# you `stop` it. Use in a heavy session so a tight GPU pool can't lock you out on
+# the next resume. Reliability-vs-cost tradeoff (see GUIDE "Cost, capacity...").
 #
 # The RunPod API key is never printed. Gotchas from the field are enforced
 # throughout — see the NOTE comments.
@@ -87,8 +96,32 @@ RUNPOD_API_KEY="${RUNPOD_API_KEY:-$_ENV_API}"
 : "${JUPYTER_PASSWORD:=}"
 : "${AUTO_MIGRATE:=1}"                      # on capacity failure, create a fresh pod on the volume
 : "${MIGRATE_TERMINATE_OLD:=1}"            # delete the old (unstartable) pod after a successful migrate
+# KEEP_ALIVE=1: never auto-stop the pod on hermes exit — it stays RUNNING (and
+# billing) until you stop it manually (`down --force` / `stop`). Use during a
+# heavy session so a tight GPU pool can't lock you out on the next resume.
+: "${KEEP_ALIVE:=0}"
 
 STATE_FILE="${TMPDIR:-/tmp}/runpod-hermes-${POD_ID:-none}.endpoint"
+
+# ---- session ref-counting --------------------------------------------------
+# So multiple `hermes` windows share ONE pod safely: each session registers its
+# id (the shell PID, passed as $RPH_SESSION by the wrapper); the pod is only
+# stopped when the LAST session exits. Keyed by conf (stable across migrates).
+# Dead sessions are auto-pruned (kill -0), so a crashed window can't pin the pod.
+sessions_file() { printf '%s/runpod-hermes-%s.sessions' "${TMPDIR:-/tmp}" "$(basename "$CONF" | tr -c 'A-Za-z0-9' '_')"; }
+session_add()   { local f; f=$(sessions_file); grep -qxF "$1" "$f" 2>/dev/null || printf '%s\n' "$1" >> "$f"; }
+session_clear() { rm -f "$(sessions_file)"; }
+# Remove $1, prune dead pids, rewrite the file; return 0 if any LIVE session remains.
+session_prune_and_any() {
+  local f live="" pid; f=$(sessions_file); [ -f "$f" ] || return 1
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    [ "$pid" = "${1:-}" ] && continue                 # drop the exiting session
+    kill -0 "$pid" 2>/dev/null && live="$live$pid"$'\n' # keep only live ones
+  done < "$f"
+  printf '%s' "$live" > "$f"
+  [ -n "$live" ]
+}
 READY_IP=""; READY_PORT=""     # set by wait_ready; consumed by cmd_up/cmd_ensure
 
 # NOTE: host key changes on every new pod container, so pin nothing and never
@@ -221,7 +254,12 @@ wait_ready_or_unwedge() {
 migrate_pod() {
   local oldid="$POD_ID" newid
   log "Auto-migrate: creating a fresh pod on volume $NETWORK_VOLUME_ID ..."
-  newid=$(create_pod_on_volume)
+  # NOTE: `die` inside $(...) only kills the subshell, so we MUST check the exit
+  # code here — otherwise a failed create (e.g. RunPod "no instances available")
+  # would leave newid empty and blank POD_ID in the conf. Do NOT touch the conf
+  # unless we actually got a new pod id.
+  newid=$(create_pod_on_volume) || die "Auto-migrate failed: could not create a replacement pod (RunPod capacity?). POD_ID left unchanged ($oldid)."
+  [ -n "$newid" ] || die "Auto-migrate failed: empty pod id from create. POD_ID left unchanged ($oldid)."
   log "New pod $newid created — waiting for boot (fresh pods pull the image once)..."
   set_conf_pod_id "$newid"
   wait_ready_or_unwedge || die "migrated pod $newid never became SSH-ready"
@@ -530,6 +568,7 @@ cmd_up() {
     die "model server did not become healthy — check $VOLUME_PATH/llama.log on the pod"
   fi
   printf '%s %s\n' "$ip" "$port" > "$STATE_FILE"
+  [ -n "${RPH_SESSION:-}" ] && session_add "$RPH_SESSION"   # register this session
   ok "Up. Model server healthy at http://localhost:$LOCAL_PORT"
 }
 
@@ -541,6 +580,20 @@ cmd_serve() {
 
 cmd_down() {
   need_cfg
+  local force=0; [ "${1:-}" = "--force" ] && force=1
+
+  if [ "$force" != 1 ]; then
+    # Keep-alive: leave the pod running until an explicit `down --force`.
+    if [ "$KEEP_ALIVE" = 1 ]; then
+      log "keep-alive is ON — leaving the pod RUNNING (stop it with: $0 down --force)"; return 0
+    fi
+    # Ref-count: if another hermes session is still using this pod, don't stop it.
+    if [ -n "${RPH_SESSION:-}" ] && session_prune_and_any "$RPH_SESSION"; then
+      log "another hermes session is still active — leaving the pod up"; return 0
+    fi
+  fi
+
+  session_clear                         # last one out (or forced): clear the roster
   if [ -f "$STATE_FILE" ]; then
     local ip port; read -r ip port < "$STATE_FILE"
     ssh_pod "$ip" "$port" 'pkill -x llama-server' 2>/dev/null || true
@@ -568,6 +621,8 @@ cmd_status() {
   else
     log "local server: not reachable on localhost:$LOCAL_PORT (pod may be down / no tunnel)"
   fi
+  local sf n; sf=$(sessions_file); n=0; [ -f "$sf" ] && n=$(grep -c . "$sf" 2>/dev/null || echo 0)
+  log "active hermes sessions: $n   |   keep-alive: $([ "$KEEP_ALIVE" = 1 ] && echo ON || echo off)"
 }
 
 cmd_test() {
@@ -598,6 +653,7 @@ case "$cmd" in
   up)          cmd_up "$@" ;;
   serve)       cmd_serve "$@" ;;
   down)        cmd_down "$@" ;;
+  stop)        cmd_down --force ;;
   status)      cmd_status "$@" ;;
   test)        cmd_test "$@" ;;
   ""|-h|--help|help) usage ;;

@@ -65,3 +65,11 @@ POD_NAME="hermes-local"                         # name for created pods
 JUPYTER_PASSWORD=""                             # optional; kept in the pod env
 AUTO_MIGRATE=1                                   # 1 = auto-create a fresh pod on capacity failure
 MIGRATE_TERMINATE_OLD=1                         # 1 = delete the old pod after a successful migrate
+
+# --- Reliability vs cost -----------------------------------------------------
+# KEEP_ALIVE=1: never auto-stop the pod when hermes exits — it stays RUNNING
+# (and billing ~$1-2/hr) until you run `rph stop`. Use during a heavy work
+# session so a tight GPU pool can't lock you out on the next resume. Default 0
+# (auto-stop when the LAST hermes session exits). You can also set it per-run:
+#   KEEP_ALIVE=1 hermes
+KEEP_ALIVE=0

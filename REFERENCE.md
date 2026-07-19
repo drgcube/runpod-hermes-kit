@@ -31,6 +31,22 @@ RunPod **resume is pinned to one host**. If that host is out of GPUs you get
 rewrite `POD_ID` in the conf → terminate the old pod. Capacity misses become an
 invisible ~1–3 min. List several GPUs in `GPU_TYPE_IDS` to miss less often.
 
+## Cost / capacity / reliability
+
+Secure Cloud **on-demand is NOT interruptible** — nobody kicks you off a RUNNING
+pod; the GPU is yours until *you* stop it. You bill per hour only while RUNNING.
+The risk is only at **reclaim time**: stopping releases the GPU, and a resume (or
+even a fresh create) can fail when the pool is dry (*"no instances available"*).
+Tradeoff: **stop-when-idle** = cheap but reclaim risk; **`KEEP_ALIVE=1`** = pod
+stays RUNNING (billing) until `rph stop`, guaranteeing you keep the GPU.
+
+## Multiple sessions
+
+Several `hermes` windows share ONE pod. Each registers `$RPH_SESSION` (its shell
+PID); `down` only stops the pod when the **last live session** exits (dead ones
+pruned via `kill -0`). Keyed by conf, not POD_ID, so it survives a migrate.
+`stop` / `down --force` bypasses the count. `rph status` shows the count.
+
 ## Gotchas (each cost real time — all handled by the kit)
 
 1. **`PUBLIC_KEY` must be the full `ssh-ed25519 AAAA…` line, not a `SHA256:`

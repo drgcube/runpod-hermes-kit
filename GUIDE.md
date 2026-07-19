@@ -128,9 +128,11 @@ pod can't resume, auto-migrate makes a fresh one automatically.
 | `config` | Rewrites the `model:` block in `~/.hermes/config.yaml` to point at the local server (timestamped backup first). |
 | `install` | Wires `hermes-wrapper.sh` into your shell rc (between markers, idempotent). |
 | `ensure` | Resume the pod, or **auto-migrate** to a fresh pod on the volume if its host is out of GPUs. |
-| `up` / `down` | `ensure` + tunnel + start server (leaves running) / stop server+pod, close tunnel. |
+| `up` | `ensure` + tunnel + start server (leaves it running). Registers a session. |
+| `down` | Stop server+pod+tunnel **only if this is the last session** (and `KEEP_ALIVE` is off). |
+| `stop` | **Force-stop** the pod now, regardless of sessions or `KEEP_ALIVE`. |
 | `serve` | (pod already up) ensure the model server is running + healthy. |
-| `status` | Pod state, `PUBLIC_KEY` health, local server reachability. |
+| `status` | Pod state, `PUBLIC_KEY` health, server reachability, **active sessions + keep-alive**. |
 | `test [--keep]` | Full end-to-end one-shot through Hermes. `--keep` leaves the pod up. |
 
 Pass a specific conf with `-c PATH` (or set `RUNPOD_HERMES_CONF`). The API key
@@ -266,18 +268,52 @@ each new shell loads the key.) Verify anytime with `ssh-add -l` or `rph doctor`.
 
 ---
 
-## Cost & safety — avoid a leaked pod
+## Cost, capacity & reliability (read this — it's the core tradeoff)
 
-The pod bills (~$1–2/hr for an A100) **whenever it's RUNNING**. The wrapper stops
-it when `hermes` exits — including on Ctrl-C, `kill`, and terminal close (via a
-`trap`). But nothing catches a hard crash / SIGKILL / lost network.
+**You are NOT billed while the pod is stopped, and you CANNOT be kicked off a
+running pod.** On RunPod **Secure Cloud on-demand** (what this kit uses), the A100
+is yours for as long as the pod stays RUNNING — no one preempts it. (Only
+*Spot/Community interruptible* pods can be evicted mid-run; this kit does not use
+those.) You pay per hour **only while RUNNING** (~$1–2/hr for an A100).
 
-**Safety nets:**
-- `./runpod-hermes.sh -c CONF status` — is it up right now?
-- `./runpod-hermes.sh -c CONF down` — stop it, always safe to run.
-- Optional watchdog: a cron entry that runs `status` and alerts (or `down`) if
-  the pod is up but GPU-idle for N minutes. RunPod also has account-level idle
-  timeouts worth enabling.
+The catch is **at resume time, not run time.** Stopping the pod (to save money)
+**releases the GPU back to the pool.** Your data survives (it's on the network
+volume + disk), but the physical GPU is no longer reserved. When you come back:
+
+- **Resume** tries to restart on the pod's *original host* — if it's full you get
+  *"not enough free GPUs on the host machine."*
+- **Auto-migrate** then tries to create a fresh pod on *any* host — but if the
+  whole pool is dry you get *"no instances currently available."*
+
+So the "only bill while chatting" design **trades cost for a reclaim risk**:
+
+| Mode | Cost | GPU guarantee |
+|---|---|---|
+| **Stop when idle** (default) | Cheap — pay only while chatting | Might not get an A100 *back* on resume when the pool is tight |
+| **`KEEP_ALIVE=1`** (keep running) | ~$1–2/hr continuous (~$36/day) | Rock-solid — it's yours until *you* `rph stop` |
+
+Use `KEEP_ALIVE=1` (in the conf, or `KEEP_ALIVE=1 hermes` for one run) during a
+heavy work session when you can't afford to lose the GPU; then `rph stop` when
+you're truly done. Otherwise the default auto-stops and you accept the occasional
+"wait for capacity."
+
+### Multiple sessions share one pod (safely)
+
+Several `hermes` windows use the **same** pod. Each registers a session id; the
+pod is only stopped when the **last** session exits — so **closing one window
+won't kill a pod another window is using** (this used to happen). Dead/crashed
+sessions are auto-pruned, so they can't pin the pod forever. `rph status` shows
+the active session count.
+
+### Avoid a leaked (forgotten-running) pod
+
+The wrapper stops the pod when the last `hermes` exits — including Ctrl-C, `kill`,
+and terminal close (via a `trap`). Nothing catches a hard SIGKILL / lost network,
+so:
+- `rph status` — is it up right now? (also shows sessions + keep-alive)
+- `rph down` — stop if you're the last session; `rph stop` — force-stop now.
+- Optional watchdog: a cron running `status` that alerts/`stop`s if the pod is up
+  but GPU-idle for N minutes. RunPod also has account-level idle timeouts.
 
 > Note: management subcommands (`hermes update|config|model|mcp|skills|--help|…`)
 > are intercepted by the wrapper and run **without** touching the pod — only real
