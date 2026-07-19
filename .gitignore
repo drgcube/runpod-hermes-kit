@@ -1,0 +1,8 @@
+# Never commit real (filled-in) client configs — only the template is tracked.
+*.conf
+!runpod-hermes.conf.example
+
+# Local artifacts
+*.tar.gz
+*.log
+.DS_Store

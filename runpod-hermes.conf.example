@@ -1,0 +1,67 @@
+# ============================================================================
+# runpod-hermes.conf  —  per-client / per-machine configuration
+# ----------------------------------------------------------------------------
+# Copy this file to e.g. ~/.config/runpod-hermes/<client>.conf, fill it in,
+# then:   ./runpod-hermes.sh -c ~/.config/runpod-hermes/<client>.conf doctor
+#
+# This file is sourced by BOTH runpod-hermes.sh (admin CLI) and
+# hermes-wrapper.sh (the shell function). It contains secrets — chmod 600 it.
+# ============================================================================
+
+# --- RunPod -----------------------------------------------------------------
+# API key from https://www.runpod.io/console/user/settings  (rpa_...).
+# You can leave this blank and `export RUNPOD_API_KEY=...` in your shell instead.
+RUNPOD_API_KEY=""
+
+# The pod id (create the pod first — see GUIDE.md "Creating a pod").
+POD_ID=""
+
+# --- SSH --------------------------------------------------------------------
+# Local private key used to reach the pod. Its .pub is what gets injected as
+# the pod's PUBLIC_KEY env var by `fix-key`. Must exist (ssh-keygen -t ed25519).
+SSH_KEY="$HOME/.ssh/id_ed25519"
+
+# --- Model + server (all paths are ON THE POD) ------------------------------
+VOLUME_PATH="/workspace"                       # network-volume mount point
+LLAMA_DIR="$VOLUME_PATH/llama.cpp"             # llama.cpp checkout/build
+MODEL_DIR="$VOLUME_PATH/models/my-model"       # where the GGUF lives
+MODEL_FILE="model.Q8_0.gguf"                   # exact GGUF filename in MODEL_DIR
+
+# Only needed for `bootstrap` (downloads the model). Hugging Face repo id and
+# the exact path of the file to pull (subfolders allowed, e.g. "Q8_0/foo.gguf").
+HF_REPO=""                                     # e.g. mradermacher/Some-Model-GGUF
+HF_FILE="$MODEL_FILE"                          # path of the file within HF_REPO
+
+# llama-server runtime.
+LLAMA_PORT=8000                                # port ON THE POD
+LLAMA_CTX=131072                               # context window. MUST be >= 65536:
+                                               #   Hermes Agent REFUSES any model
+                                               #   with a <64K window.
+LLAMA_NGL=999                                  # GPU layers (999 = all; needs CUDA build)
+API_SECRET="change-me-shared-secret"           # llama-server --api-key value
+
+# --- Hermes (local machine) -------------------------------------------------
+MODEL_ALIAS="local-model"                      # arbitrary; llama.cpp ignores the
+                                               # request model field, so any name works
+HERMES_CONFIG="$HOME/.hermes/config.yaml"      # Hermes CLI config to patch
+LOCAL_PORT=8000                                # local end of the SSH tunnel
+                                               # (Hermes base_url = localhost:LOCAL_PORT)
+
+# --- Shell ------------------------------------------------------------------
+SHELL_RC="$HOME/.zshrc"                         # rc file `install` wires the wrapper into
+
+# --- Pod creation / auto-migrate --------------------------------------------
+# Used by `create` (onboard a new client's pod) and by AUTO-MIGRATE: when a
+# resume fails because the pod's host is out of GPUs, the kit creates a fresh
+# pod on NETWORK_VOLUME_ID (model+build already there), repoints POD_ID in this
+# file, drops the old pod, and continues. Set NETWORK_VOLUME_ID to enable it.
+NETWORK_VOLUME_ID=""                            # existing volume id (see: list-network-volumes)
+POD_IMAGE="runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404"
+GPU_TYPE_IDS="NVIDIA A100-SXM4-80GB,NVIDIA A100 80GB PCIe"  # comma list; first AVAILABLE wins
+CONTAINER_DISK_GB=30
+POD_PORTS="22/tcp,8888/http"
+CLOUD_TYPE="SECURE"                             # SECURE or COMMUNITY
+POD_NAME="hermes-local"                         # name for created pods
+JUPYTER_PASSWORD=""                             # optional; kept in the pod env
+AUTO_MIGRATE=1                                   # 1 = auto-create a fresh pod on capacity failure
+MIGRATE_TERMINATE_OLD=1                         # 1 = delete the old pod after a successful migrate
