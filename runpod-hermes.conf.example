@@ -38,6 +38,10 @@ LLAMA_CTX=131072                               # context window. MUST be >= 6553
                                                #   Hermes Agent REFUSES any model
                                                #   with a <64K window.
 LLAMA_NGL=999                                  # GPU layers (999 = all; needs CUDA build)
+LLAMA_EXTRA_ARGS=""                            # extra llama-server flags. e.g.
+                                               #   "--reasoning-budget 0"  disables a
+                                               #   reasoning model's thinking (Qwen3/
+                                               #   DeepSeek) → instant replies.
 API_SECRET="change-me-shared-secret"           # llama-server --api-key value
 
 # --- Hermes (local machine) -------------------------------------------------

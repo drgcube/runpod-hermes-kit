@@ -80,6 +80,9 @@ RUNPOD_API_KEY="${RUNPOD_API_KEY:-$_ENV_API}"
 : "${LLAMA_PORT:=8000}"
 : "${LLAMA_CTX:=131072}"
 : "${LLAMA_NGL:=999}"
+# Extra llama-server flags. e.g. "--reasoning-budget 0" disables a reasoning
+# model's thinking (Qwen3/DeepSeek) for instant replies; add any flags you like.
+: "${LLAMA_EXTRA_ARGS:=}"
 : "${API_SECRET:=change-me}"
 : "${MODEL_ALIAS:=local-model}"
 : "${HERMES_CONFIG:=$HOME/.hermes/config.yaml}"
@@ -342,7 +345,7 @@ serve() { # $1 ip  $2 port
   local ip=$1 port=$2 remote i code
   remote="if ! pgrep -x llama-server >/dev/null 2>&1; then \
 setsid bash -c '\"$LLAMA_DIR/build/bin/llama-server\" -m \"$MODEL_DIR/$MODEL_FILE\" \
---host 0.0.0.0 --port $LLAMA_PORT -ngl $LLAMA_NGL -c $LLAMA_CTX -np 1 \
+--host 0.0.0.0 --port $LLAMA_PORT -ngl $LLAMA_NGL -c $LLAMA_CTX -np 1 $LLAMA_EXTRA_ARGS \
 --api-key \"$API_SECRET\" > \"$VOLUME_PATH/llama.log\" 2>&1' </dev/null >/dev/null 2>&1 & fi; echo ok"
   ssh_pod "$ip" "$port" "$remote" >/dev/null || return 1
   for i in $(seq 1 60); do
