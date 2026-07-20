@@ -455,18 +455,26 @@ cmd_bootstrap() {
 set -e
 echo "== deps =="
 command -v git >/dev/null || (apt-get update -y && apt-get install -y git build-essential cmake)
-python3 -m pip install -q -U "huggingface_hub[cli]" || pip install -q -U "huggingface_hub[cli]"
+# huggingface_hub 1.x renamed the CLI to 'hf' and dropped the [cli] extra; and
+# Ubuntu's PEP 668 blocks system pip without --break-system-packages (fine in a
+# disposable container). Try all combos so this works old and new.
+pip install --break-system-packages -q -U huggingface_hub 2>/dev/null \
+  || python3 -m pip install --break-system-packages -q -U huggingface_hub 2>/dev/null \
+  || pip install -q -U huggingface_hub
+HFCLI=hf; command -v hf >/dev/null 2>&1 || HFCLI=huggingface-cli   # new 'hf', fallback old
 
 echo "== model =="
 mkdir -p "$MODEL_DIR"
 if [ -f "$MODEL_DIR/$MODEL_FILE" ]; then
   echo "model present: $MODEL_DIR/$MODEL_FILE"
 elif [ -n "$HF_REPO" ]; then
-  echo "downloading $HF_FILE from $HF_REPO ..."
-  huggingface-cli download "$HF_REPO" "$HF_FILE" --local-dir "$MODEL_DIR"
+  echo "downloading $HF_FILE from $HF_REPO via \$HFCLI ..."
+  "\$HFCLI" download "$HF_REPO" "$HF_FILE" --local-dir "$MODEL_DIR"
   # flatten if HF put it in a subfolder
   found=\$(find "$MODEL_DIR" -name "\$(basename "$MODEL_FILE")" | head -1)
   [ -n "\$found" ] && [ "\$found" != "$MODEL_DIR/$MODEL_FILE" ] && mv "\$found" "$MODEL_DIR/$MODEL_FILE" || true
+  [ -f "$MODEL_DIR/$MODEL_FILE" ] || { echo "!! download FAILED — $MODEL_FILE not found"; exit 1; }
+  rm -rf "$MODEL_DIR/.cache"   # reclaim the HF download cache
 else
   echo "!! no model and HF_REPO unset — place the GGUF at $MODEL_DIR/$MODEL_FILE yourself"
 fi
@@ -483,6 +491,8 @@ fi
 echo "== bootstrap done =="
 ls -la "$LLAMA_DIR/build/bin/llama-server" "$MODEL_DIR/$MODEL_FILE"
 EOF
+  local rc=$?
+  [ "$rc" -eq 0 ] || die "bootstrap failed (remote exit $rc) — check the output above"
   ok "Bootstrap complete."
 }
 
