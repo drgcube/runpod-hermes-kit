@@ -23,6 +23,7 @@
 #   stop          Force-stop the pod now, regardless of sessions/keep-alive
 #   serve         (pod running) ensure the model server is up + healthy
 #   status        Show pod state + server health + active sessions + keep-alive
+#   watchdog      One idle-check: force-stop the pod if GPU idle >= IDLE_MINUTES (schedule via cron)
 #   test          up -> one-shot through Hermes -> down   (add --keep to stay up)
 #
 # AUTO-MIGRATE: when a resume fails because the pod's host has no free GPU, the
@@ -100,6 +101,9 @@ RUNPOD_API_KEY="${RUNPOD_API_KEY:-$_ENV_API}"
 # billing) until you stop it manually (`down --force` / `stop`). Use during a
 # heavy session so a tight GPU pool can't lock you out on the next resume.
 : "${KEEP_ALIVE:=0}"
+# Watchdog: stop the pod after this many minutes of GPU idleness (safety net for
+# a forgotten/kept-alive pod). Used by `watchdog`; schedule it via cron/launchd.
+: "${IDLE_MINUTES:=20}"
 
 STATE_FILE="${TMPDIR:-/tmp}/runpod-hermes-${POD_ID:-none}.endpoint"
 
@@ -625,6 +629,36 @@ cmd_status() {
   log "active hermes sessions: $n   |   keep-alive: $([ "$KEEP_ALIVE" = 1 ] && echo ON || echo off)"
 }
 
+# One watchdog tick: if the pod is RUNNING and its GPU has been idle for
+# >= IDLE_MINUTES, force-stop it. Safety net for forgotten / KEEP_ALIVE pods.
+# Schedule it (see GUIDE); each run is a single cheap check. Needs RUNPOD_API_KEY
+# in its environment (cron/launchd doesn't inherit your shell — see GUIDE).
+cmd_watchdog() {
+  need_cfg
+  local idlef; idlef="${TMPDIR:-/tmp}/runpod-hermes-$(basename "$CONF" | tr -c 'A-Za-z0-9' '_').idle"
+  local resp state ip port
+  resp=$(graphql "{\"query\":\"query { pod(input: {podId: \\\"$POD_ID\\\"}) { desiredStatus runtime { ports { ip privatePort publicPort } } } }\"}")
+  state=$(printf '%s' "$resp" | jq -r '.data.pod.desiredStatus // empty')
+  if [ "$state" != "RUNNING" ]; then rm -f "$idlef"; log "watchdog: pod not running — nothing to do"; return 0; fi
+  ip=$(printf '%s' "$resp" | jq -r '.data.pod.runtime.ports[]? | select(.privatePort==22) | .ip')
+  port=$(printf '%s' "$resp" | jq -r '.data.pod.runtime.ports[]? | select(.privatePort==22) | .publicPort')
+  [ -n "$ip" ] && [ "$ip" != "null" ] || { log "watchdog: no SSH endpoint yet — skip"; return 0; }
+  local util
+  util=$(ssh_pod "$ip" "$port" "nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits" 2>/dev/null | head -1 | tr -dc '0-9')
+  : "${util:=0}"
+  if [ "$util" -gt 5 ] 2>/dev/null; then rm -f "$idlef"; log "watchdog: GPU busy (${util}%) — reset idle timer"; return 0; fi
+  # idle: track how long. (date is fine in a plain shell script.)
+  local now start elapsed; now=$(date +%s)
+  if [ -f "$idlef" ]; then start=$(cat "$idlef" 2>/dev/null); else start=$now; printf '%s' "$now" > "$idlef"; fi
+  case "$start" in ''|*[!0-9]*) start=$now; printf '%s' "$now" > "$idlef" ;; esac
+  elapsed=$(( (now - start) / 60 ))
+  log "watchdog: GPU idle ${elapsed}/${IDLE_MINUTES} min"
+  if [ "$elapsed" -ge "$IDLE_MINUTES" ]; then
+    log "watchdog: idle >= ${IDLE_MINUTES}m — force-stopping the pod"
+    rm -f "$idlef"; cmd_down --force
+  fi
+}
+
 cmd_test() {
   command -v hermes >/dev/null 2>&1 || die "hermes not on PATH — install Hermes Agent first"
   cmd_up
@@ -655,6 +689,7 @@ case "$cmd" in
   down)        cmd_down "$@" ;;
   stop)        cmd_down --force ;;
   status)      cmd_status "$@" ;;
+  watchdog)    cmd_watchdog "$@" ;;
   test)        cmd_test "$@" ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command: $cmd  (run: $0 --help)" ;;

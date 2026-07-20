@@ -312,8 +312,19 @@ and terminal close (via a `trap`). Nothing catches a hard SIGKILL / lost network
 so:
 - `rph status` — is it up right now? (also shows sessions + keep-alive)
 - `rph down` — stop if you're the last session; `rph stop` — force-stop now.
-- Optional watchdog: a cron running `status` that alerts/`stop`s if the pod is up
-  but GPU-idle for N minutes. RunPod also has account-level idle timeouts.
+- **`rph watchdog`** — one idle-check: force-stops the pod if the GPU has been
+  idle ≥ `IDLE_MINUTES` (default 20). Schedule it as a safety net for forgotten /
+  `KEEP_ALIVE` pods:
+
+  ```cron
+  # every 5 min. NOTE: cron has a bare env — it does NOT inherit your shell, so
+  # RUNPOD_API_KEY must be provided. Simplest: put the key in the conf (chmod 600)
+  # OR export it in the cron line (both are plaintext-on-disk, like ~/.zshrc).
+  */5 * * * * RUNPOD_API_KEY=xxx /path/to/runpod-hermes.sh -c /path/to/client.conf watchdog >> /tmp/rph-watchdog.log 2>&1
+  ```
+
+  Pick a generous `IDLE_MINUTES` so normal think-time between messages doesn't
+  trip it. RunPod also has account-level idle timeouts worth enabling.
 
 > Note: management subcommands (`hermes update|config|model|mcp|skills|--help|…`)
 > are intercepted by the wrapper and run **without** touching the pod — only real
