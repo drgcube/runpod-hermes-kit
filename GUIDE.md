@@ -376,10 +376,39 @@ self-heal via auto-migrate. Reusing the same volume for another pod later? Skip
 
 ---
 
+## Tool calling, vision & picking a model
+
+For an **agent** (Hermes and friends), the model must actually *tool-call* well —
+this is where model choice and flags matter more than raw speed:
+
+- **`--jinja` is REQUIRED for tool calling.** Without it, `llama-server` uses a
+  generic chat template that doesn't emit tool-call structure, and the agent
+  flails (loops on `ls`, won't `cd`, hallucinates typos). Add it via
+  `LLAMA_EXTRA_ARGS="--jinja"`. Verify with a real tool request — the reply
+  should have `finish_reason: "tool_calls"` and a populated `tool_calls` array.
+- **Not every model tool-calls.** A general-chat *abliterated* model can be great
+  at prose yet terrible at agentic tool use (we watched a 30B-A3B abliterated fail
+  badly). Prefer a model trained for function calling (e.g. Gemma 4, Nous Hermes,
+  Qwen-Coder). Abliteration can also nick tool-call *formatting* fidelity.
+- **Vision:** a multimodal GGUF ships an `mmproj` file; serve it with
+  `--mmproj /workspace/models/<m>/mmproj.gguf` (via `LLAMA_EXTRA_ARGS`) and the
+  server logs `loaded multimodal model`.
+- **Thinking vs tools:** disabling thinking (`--reasoning-budget 0`) speeds chat
+  but can *hurt* tool selection (the model reasons about which tool to call). For
+  agentic work, leaving thinking on often helps.
+- **MoE for speed:** an "A_xB" model (e.g. 26B-**A4B**, 30B-**A3B**) has that many
+  *active* params per token, so it runs like a small model with big-model breadth.
+- **A new model won't load?** Its architecture may be newer than your llama.cpp
+  build — `git pull` + rebuild in `bootstrap`. (A "compatibility workarounds"
+  *warning* is fine; a hard "unknown architecture" error means rebuild.)
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
+| Agent loops / won't use tools (runs `ls`, won't `cd`, "typo" hallucinations) | Missing `--jinja` and/or a model that doesn't tool-call. Add `LLAMA_EXTRA_ARGS="--jinja"` and use a function-calling model. See "Tool calling, vision & picking a model". |
 | `hermes` hangs silently on "Bringing pod up…" | Passphrase key not in this terminal's ssh-agent → BatchMode SSH keeps failing. Fix: `ssh-add --apple-use-keychain ~/.ssh/id_ed25519`. (The kit now fails fast on this instead of hanging; `rph doctor` flags it.) |
 | SSH `Permission denied (publickey)` after resume | `PUBLIC_KEY` wrong/missing → `fix-key` then `cycle`. Confirm with `verify-key`. Also check your key is in ssh-agent (`ssh-add -l`). |
 | Hermes: "context window … below the minimum 64,000" | `LLAMA_CTX` too small → raise to ≥65536, restart server, match `context_length`. |

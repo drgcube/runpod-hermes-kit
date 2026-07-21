@@ -77,6 +77,11 @@ pruned via `kill -0`). Keyed by conf, not POD_ID, so it survives a migrate.
 12. **Some hosts inject the key slowly on boot (~4–6 min).** Be patient (up to
     ~6 min, returns the instant SSH auth works); don't unwedge eagerly — a
     stop→start just re-incurs the slow boot.
+13. **Tool calling needs `--jinja`** (uses the model's real chat template) AND a
+    model actually trained to tool-call — general-chat/abliterated models often
+    flop at agentic tool use even if they're great at prose. Vision needs
+    `--mmproj <file>`. Both go in `LLAMA_EXTRA_ARGS`. Verify tools with a request
+    that returns `finish_reason: "tool_calls"`.
 
 Note: "Permission denied" alone can't tell apart (a) key-not-in-agent from (b)
 key-not-yet-injected — both look identical. That's why the kit *prechecks* agent
